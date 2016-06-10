@@ -1,0 +1,88 @@
+#! /usr/bin/env python2
+
+import os
+import re
+import sys
+import glob
+import subprocess
+import argcomplete
+
+import dgt.logger as logger
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+_workflows = map(lambda x: x[len(sys.argv[0])+1:], glob.glob(sys.argv[0] + '-*'))
+
+parser = ArgumentParser(description='Automated workflow hub')
+
+group1 = parser.add_argument_group('actions', 'Workflow actions')
+group1.add_argument('--run', '-r', metavar='WORKFLOW', action='store', choices=_workflows, help='Process a workflow, options: %s' % str(_workflows))
+group1.add_argument('--continue', '-c', dest='_continue', action='store_true', help='Continue the current workflow')
+group1.add_argument('--abort', action='store_true', help='Abort the current workflow')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+    sys.argv.append('--help')
+
+options, pro_args = parser.parse_known_args(sys.argv[1:])
+
+os.environ["BASH_ENV"] = ".dgt_workflow.env"
+
+lines = []
+if options.run:
+    if os.access(".dgt_workflow.run", os.R_OK):
+        logger.cli.error("An existing workflow detected")
+        logger.cli.error("Cannot initiate a new workflow")
+        logger.cli.error("Finish or abort the current workflow before initiating a new one")
+        sys.exit(1)
+    f = file(sys.argv[0] + '-' + options.run, "r")
+    # Ignore shebang
+    f.readline()
+    # Read the arg spec
+    req_args = f.readline()[:-1].split(" ")[1:]
+    if len(pro_args) != len(req_args):
+        logger.cli.error("The workflow requires following arguments:")
+        logger.cli.error(" ".join(req_args))
+        sys.exit(1)
+    for i in range(len(req_args)):
+        os.environ[req_args[i]] = pro_args[i]
+        subprocess.call(["/bin/bash", "-c", "export > .dgt_workflow.env"])
+    lines = f.readlines()
+    lines.reverse()
+    f.close()
+
+if options._continue:
+    if not os.access(".dgt_workflow.run", os.R_OK):
+        logger.cli.error("No existing workflow found")
+        logger.cli.error("Initiate a new workflow with --run <workflow> before continuing one")
+        sys.exit(1)
+    f = file(".dgt_workflow.run", "r")
+    lines = f.readlines()
+    lines.reverse()
+    f.close()
+
+lines = filter(lambda x: not re.match(r'^\s*$', x), lines)
+while lines and subprocess.call(["/bin/bash", "-c", lines[-1][:-1] + "; _E=$?; export > .dgt_workflow.env; exit $_E"]) == 0:
+    lines.pop()
+
+if lines:
+    logger.cli.error("Failed to execute the following step:")
+    logger.cli.error("# " + lines[-1])
+    logger.cli.error("Please try to fix this manually")
+    logger.cli.error("Once fixed, you can use --continue to finish the workflow")
+    # Store the rest of the lines
+    lines.pop()
+    f = file(".dgt_workflow.run", "w")
+    f.writelines(lines)
+    f.close()
+    sys.exit(1)
+else:
+    options.abort = True
+
+if options.abort:
+    try:
+        os.remove(".dgt_workflow.env")
+        os.remove(".dgt_workflow.run")
+    except:
+        pass

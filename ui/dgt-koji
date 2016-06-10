@@ -1,0 +1,107 @@
+#! /usr/bin/env python2
+
+import imp
+import sys
+import dgt
+import dgt.logger as logger
+import argparse
+import argcomplete
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+# a bit of a hack to import the koji cli code
+fo = file('/usr/bin/koji', 'U')
+try:
+	clikoji = imp.load_module('clikoji', fo, fo.name, ('.py', 'U', 1)) 
+finally:
+	fo.close()
+	activate_session = clikoji.activate_session
+
+parser = ArgumentParser(description='Perform a koji build')
+
+# Add options that do an actual work, these can be combined!
+group1 = parser.add_argument_group('actions', 'Actions to perform, each argument specifies a separate action, actions can be combined.')
+group1.add_argument('--build', '-b', action='store_true', default=False, help='Perform a regular koji build')
+group1.add_argument('--chain', '-c', action='append', default=[], help='Perform a chain build, defines the build sequence if used multiple times, each single usage accepts comma separated list of packages that can be build in parallel, i.e. --chain a,b --chain c')
+group1.add_argument('--cancel', type=int, action='store', default=None, help='Cancel a build, takes task id as an argument')
+group1.add_argument('--scratch', '-s', action='store_true', default=False, help='Perform a scratch build')
+group1.add_argument('--watch', '-w', nargs='?', type=int, const=-1, default=0, help='Watch a build or given ID')
+#group1.add_argument('--upload', '-u', action='store_true', default=False, help='Upload srpm to koji')
+
+# Add shared modifier options
+group2 = parser.add_argument_group('shared-modifiers', 'Modifiers that are shared between the following actions: chain, build, scratch')
+group2.add_argument('--background', action='store_true', default=False, help='Perform the build with a low priority')
+group2.add_argument('--nvr-check', action='store_true', default=False, help="Locally construct NVR and submit a build only if NVR doesn't exist in the build system")
+group2.add_argument('--skip-tag', action='store_true', default=False, help='Skip the tag action after the build')
+group2.add_argument('--fast', '-f', action='store_true', default=False, help='Use *-fast-candidate instead of *-candidate build target')
+
+# Add scratch build options, we can only set architectures for scratch build
+group3 = parser.add_argument_group('scratch-modifiers', 'Modifiers for "scratch" action')
+group3.add_argument('--arch', '-a', action='append', default=[], help='Specify the architectures to perform the scratch build for, default is all of them')
+group3.add_argument('--url-build', action='store_true', default=False, help='Do not upload src.rpm, perform a scratch build from git url')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+options.tasks = []
+
+command = dgt.Commands(options)
+
+# Do a -fast-candidate build
+if options.fast:
+	command._target = command.target.replace('-candidate', '-fast-candidate')
+
+# Process the commands
+
+# Cancel the given task, first
+if options.cancel != None:
+	command.build_cancel(options.cancel)
+
+# Upload the srpm, srpm_koji_url is a property function
+#if options.upload:
+#	logger.cli.info("[build] Upload url: %s" % command.srpm_koji_url)
+
+# Shall I perform a scratch build?
+if options.scratch:
+	if options.url_build:
+		# This is a hacky solution to workaround rhbz#1169663
+		if options.dist:
+			url = command.anongiturl % {'module': command.module_name + '?#%s' % command.commithash}
+		else:
+			url = None
+	else:
+		url = command.srpm_koji_url
+	build_id = command.build(url=url, scratch=True, skip_tag=options.skip_tag, background=options.background, arches=options.arch, nvr_check=options.nvr_check)
+	logger.cli.info("[build] Scratch task id: %d" % build_id)
+	logger.cli.info("[build] See '%s/taskinfo?taskID=%s' for details" % (command.kojiweburl, build_id))
+	if options.watch != 0:
+		options.tasks.append(build_id)
+
+# Shall I perform a regular koji build?
+if options.build:
+	build_id = command.build(skip_tag=options.skip_tag, scratch=False, background=options.background, arches=options.arch, nvr_check=options.nvr_check)
+	logger.cli.info("[build] Task id: %d" % build_id)
+	logger.cli.info("[build] See '%s/taskinfo?taskID=%s' for details" % (command.kojiweburl, build_id))
+	if options.watch != 0:
+		options.tasks.append(build_id)
+
+if options.chain:
+	chain = map(lambda x: x.split(','), options.chain)
+	build_id = command.build(chain=chain, skip_tag=options.skip_tag, scratch=False, background=options.background, arches=options.arch, nvr_check=options.nvr_check)
+	logger.cli.info("[build] Chain task id: %d" % build_id)
+	logger.cli.info("[build] See '%s/taskinfo?taskID=%s' for details" % (command.kojiweburl, build_id))
+	if options.watch != 0:
+		options.tasks.append(build_id)
+
+# If there was a build id to watch, add it to the tasks list
+if options.watch > 0:
+	options.tasks.append(options.watch)
+
+# Just watch the build and show its status
+if options.tasks:
+	clikoji.options = argparse.Namespace(poll_interval = 5)
+	clikoji.watch_tasks(command.kojisession, options.tasks)

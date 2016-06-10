@@ -1,0 +1,9 @@
+*.pyc
+*.rpm
+*.tar.gz
+MANIFEST
+man1
+build
+dgt.spec
+setup.py
+.idea

@@ -1,0 +1,165 @@
+#! /usr/bin/env bash
+
+set -e
+
+declare -A PASS
+
+COMMAND=
+FOUND=
+HEXSHA=
+i=0
+
+for arg in "$@"; do
+	if test "$COMMAND" == "--patch" -a -z "$HEXSHA"; then
+		HEXSHA="$arg"
+	elif test \( "$arg" == "--init" -o \
+	             "$arg" == "--patch" -o \
+	             "$arg" == "--apply" -o \
+	             "$arg" == "--abort" -o \
+	             "$arg" == "--help" \) \
+	             -a -z "$FOUND"; then
+		COMMAND="$arg"
+		FOUND="y"
+	else
+		PASS[$i]="$arg"
+		i=$(echo $i + 1 | bc -q)
+	fi
+done
+
+case "$COMMAND" in
+--init)
+	# Make sure we are in the base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-local//')
+	if git rev-parse --verify "$BASE_BRANCH-local" >/dev/null 2>/dev/null; then
+		echo "The -local branch already exists"
+		echo "Please abort or apply the previous -local branch, first"
+		exit 1
+	fi
+	if test -f .dgt_spec.bup; then
+		echo "A -local file already exists"
+		echo "Please abort the previous -local, first"
+		exit 1
+	fi
+	echo "Preparing $BASE_BRANCH-local branch.."
+
+	# Get the spec file location
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+
+	# Prep sources
+	dgt srpm --prep "${PASS[@]}"
+
+	# Get the dir from the spec file
+	DIR=$(rpmspec -P $SPEC 2>/dev/null |egrep '(^%setup|^%autosetup).*-n' | sed 's|^.* -n |-n |' | awk '{print $2}')
+
+	# If this failed, use the default value for dir
+	test -z "$DIR" && DIR=$(dgt print -m -v module_name "${PASS[@]}")-$(dgt print -m -v ver "${PASS[@]}")
+
+	git checkout --orphan "$BASE_BRANCH-local"
+	git rm -rf .
+	git add "$DIR/*"
+	git mv "$DIR/"* ./
+	rmdir "$DIR"
+	git commit -am "Initial commit ($DIR)"
+
+	echo "You can now apply the new patches. You can use e.g. '$0 --patch <hexsha>' for that"
+	;;
+--patch)
+	git format-patch --stdout "$HEXSHA~1..$HEXSHA" > .dgt_patch.mbox
+	git am -3 .dgt_patch.mbox
+	echo "You can now add other patches or use '$0 --apply' to update the original dist-git branch"
+	;;
+--apply)
+	# Make sure we are in the base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-local//')
+	echo "Applying patches from $BASE_BRANCH-local branch.."
+	git checkout "$BASE_BRANCH"
+	# Get the SPEC file location and highest patch number
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+	# Backup the spec
+	rm -f .dgt_spec.bup
+	cp -f "$SPEC" .dgt_spec.bup
+	# Find the last patch number, 0 means no previous patch was found
+	LAST_PATCH=$(egrep '^%patch' "$SPEC" | cut -d ' ' -f 1 | sed 's/%patch//' | sort -n | tail -1)
+	test -z "$LAST_PATCH" && LAST_PATCH=0
+	# Make sure we are in the -local branch
+	git checkout "$BASE_BRANCH-local"
+	# Find the oldest commit
+	FIRST_COMMIT=$(git rev-list HEAD | tail -n 1)
+	# Remove any old patches and create new ones
+	rm -rf .dgt_patches
+	git format-patch --start-number $(echo $LAST_PATCH + 1 | bc -q) -o .dgt_patches -N "$FIRST_COMMIT"
+	if test -z "$(ls .dgt_patches)"; then
+		echo "Nothing to apply."
+		exit 1
+	fi
+	# Make sure we are back in the base branch
+	git checkout "$BASE_BRANCH"
+	# Setup data for changelog line
+	DATE=$(date '+%a %b %d %Y')
+	NAME=$(git config --get user.name)
+	EMAIL=$(git config --get user.email)
+	EPOCH=$(dgt print -mv 'epoch' -d 0)
+	VER=$(dgt print -mv 'ver' "${PASS[@]}")
+	# Deal with Release version
+	REL=$(dgt print -mv 'rel' "${PASS[@]}" | cut -d '.' -f 1)
+	NEW_REL=$(echo $REL + 1 | bc -q)
+	REL_LINE=$(egrep '^Release:' $SPEC)
+	NEW_REL_LINE=$(echo "$REL_LINE" | sed "s/$REL/$NEW_REL/")
+	sed -i "s/$REL_LINE/$NEW_REL_LINE/" "$SPEC"
+	# Create initial changelog line
+	CHANGELOG_LINES="* $DATE $NAME <$EMAIL> - $EPOCH:$VER-$NEW_REL\n"
+	CHANGELOG_LINES="$CHANGELOG_LINES- New release ($EPOCH:$VER-$NEW_REL)\n"
+	# Initialize iterators
+	CUR_PATCH_LINE1=$(egrep '^Patch|^Source' "$SPEC" | cut -d ':' -f 1 | tail -1)
+	CUR_PATCH_LINE2=$(egrep '^%patch|^%setup|^%prep' "$SPEC" | cut -d ' ' -f 1 | tail -1)
+	CUR_PATCH=$(echo $LAST_PATCH + 1 | bc -q)
+	for patch in $(ls .dgt_patches); do
+		sed -i "/^$CUR_PATCH_LINE1/a Patch$CUR_PATCH: $patch" "$SPEC"
+		sed -i "/^$CUR_PATCH_LINE2/a %patch$CUR_PATCH -p1" "$SPEC"
+		_new=$(egrep ^Subject ".dgt_patches/$patch" | cut -d ' ' -f 3-)
+		CHANGELOG_LINES="$CHANGELOG_LINES- $_new\n"
+		mv ".dgt_patches/$patch" ./
+		git add "$patch"
+		CUR_PATCH_LINE1="Patch$CUR_PATCH"
+		CUR_PATCH_LINE2="%patch$CUR_PATCH"
+		CUR_PATCH=$(echo $CUR_PATCH + 1 | bc -q)
+	done
+	sed -i "/^%changelog/a $CHANGELOG_LINES" "$SPEC"
+	dgt clog --commit "${PASS[@]}"
+
+	# Just do the basic cleanup
+	git branch -D "$BASE_BRANCH-local"
+	rm -rf .dgt_patches/
+	rm -f .dgt_spec.bup
+
+	echo "Sucessfully updated the original branch. Please check the commit and ammend it with 'dgt commit --amend' if necessary."
+	;;
+--abort)
+	# Make sure we are in the base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-local//')
+	git checkout "$BASE_BRANCH"
+	git branch -D "$BASE_BRANCH-local" || :
+
+	# Get the spec file location
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+
+	# Clean the dir with patches
+	rm -rf .dgt_patches/ || :
+
+	# Reset to the tracked remote
+	REMOTE=$(dgt print -mv branch_remote "${PASS[@]}")/$(dgt print -mv branch_merge "${PASS[@]}")
+	git reset --hard "$REMOTE" || :
+	mv -f .dgt_spec.bup "$SPEC" || :
+	git clean -fxd || :
+	echo "The -local branch was aborted. You can now initialize a new -local branch."
+	;;
+*)
+	echo "Usage: $0 <command> [modifiers]
+
+Available commands:
+--init            : Create a -local branch from %prep
+--patch <hexsha>  : Apply the patch using 3-way merge
+--apply           : Apply back the patches from -local branch
+--abort           : Abort the changes and remove the -local branch"
+	;;
+esac

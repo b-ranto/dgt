@@ -1,0 +1,255 @@
+#! /usr/bin/env bash
+
+set -e
+
+declare -A PASS
+
+COMMAND=
+FOUND=
+VERSION=
+i=0
+
+for arg in "$@"; do
+	if test "$COMMAND" == "--init" -a -z "$VERSION"; then
+		VERSION="$arg"
+	elif test \( "$arg" == "--init" -o \
+	             "$arg" == "--patch" -o \
+	             "$arg" == "--apply" -o \
+	             "$arg" == "--abort" -o \
+	             "$arg" == "--help" \) \
+	             -a -z "$FOUND"; then
+		COMMAND="$arg"
+		FOUND="y"
+	else
+		PASS[$i]="$arg"
+		i=$(echo $i + 1 | bc -q)
+	fi
+done
+
+case "$COMMAND" in
+--init)
+	if test -z "$VERSION"; then
+		echo "No version argument was given, exiting.."
+		exit 1
+	fi
+
+	# Make sure we are in the -base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-bump//')
+	if git rev-parse --verify "$BASE_BRANCH-bump" >/dev/null 2>/dev/null; then
+		echo "The bump branch already exists"
+		echo "Please abort or apply the previous -bump branch, first"
+		exit 1
+	fi
+
+	if test -d .dgt_patches -o -f .dgt_spec.bup; then
+		echo "The -bump files already exist"
+		echo "Please abort the previous -bump, first"
+		exit 1
+	fi
+	echo "Doing the bump..."
+
+	# Make sure we get all the old sources, also create a backup srpm
+	dgt srpm --build "${PASS[@]}"  || :
+
+	# Get the spec file location
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+
+	# Copy the patches for further processing
+	rm -rf .dgt_patches
+	mkdir -p .dgt_patches
+	for patch in $(egrep '^Patch' "$SPEC" | awk '{print $2}'); do
+		 cp "$patch" .dgt_patches/
+		 git rm "$patch"
+	done
+
+	# Modify the spec file 
+	rm -f .dgt_spec.bup
+	cp -f "$SPEC" .dgt_spec.bup
+	egrep -v '^Patch|^%patch' .dgt_spec.bup > "$SPEC"
+
+	# Deal with release
+	REL=$(dgt print -mv 'rel' "${PASS[@]}" | cut -d '.' -f 1)
+	NEW_REL="1"
+	REL_LINE=$(egrep '^Release:' "$SPEC")
+	NEW_REL_LINE=$(echo "$REL_LINE" | sed "s/$REL/$NEW_REL/")
+	sed -i "s/$REL_LINE/$NEW_REL_LINE/" "$SPEC"
+
+	# Deal with version
+	VER=$(dgt print -mv 'ver' "${PASS[@]}")
+	NEW_VER="$VERSION"
+	VER_LINE=$(egrep '^Version:' "$SPEC")
+	NEW_VER_LINE=$(echo "$VER_LINE" | sed "s/$VER/$NEW_VER/")
+	sed -i "s/$VER_LINE/$NEW_VER_LINE/" "$SPEC"
+
+	# Parse spec, grep sources, filter the urls and change the version 
+	NOT_FOUND=""
+	SOURCES=$(rpmspec -P $SPEC | egrep '^Source' | awk '{print $2}' | sed "s/$VER/$NEW_VER/") 
+	for source in $SOURCES; do
+		# Skip files that are tracked by git
+		git ls-files --error-unmatch $(basename "$source") >/dev/null 2>/dev/null && continue
+
+		# Download and upload the sources if they do not already exist
+		test ! -f $(basename "$source") && (echo "$source" | grep '://') && (echo "wgeting"; wget -qnc "$source") || :
+		if test -f $(basename "$source"); then
+			# Upload the file to lookaside cache
+			dgt upload-sources $(basename "$source") "${PASS[@]}"
+		else
+			NOT_FOUND="$NOT_FOUND'$(basename $source)' "
+		fi
+	done
+
+	# Stop if not all sources were found
+	if test -n "$NOT_FOUND"; then
+		echo -e "\nERROR: Failed to automatically download/find the following sources:\n$NOT_FOUND\n"
+		echo "Provide them manually, please."
+		exit 1
+	fi
+
+	# Setup data for changelog line
+	DATE=$(date '+%a %b %d %Y')
+	NAME=$(git config --get user.name)
+	EMAIL=$(git config --get user.email)
+
+	# Commit the changes
+	dgt commit -am "Initial bump/rebase commit ($NEW_VER)" "${PASS[@]}"
+
+	echo "Preparing '$BASE_BRANCH-bump branch.."
+
+	# Prep sources
+	dgt srpm --prep "${PASS[@]}"
+
+	# Get the dir from the spec file
+	DIR=$(rpmspec -P $SPEC 2>/dev/null |egrep '(^%setup|^%autosetup).*-n' | sed 's|^.* -n |-n |' | awk '{print $2}')
+
+	# If this failed, use the default value for dir
+	test -z "$DIR" && DIR=$(dgt print -m -v module_name "${PASS[@]}")-$(dgt print -m -v ver "${PASS[@]}")
+
+	git checkout --orphan "$BASE_BRANCH-bump"
+	git rm -rf .
+	git add "$DIR/*"
+	git mv "$DIR/"* ./
+	rmdir "$DIR"
+	git commit -am "Initial commit ($DIR)"
+
+	echo "You can now apply the existing patches with '$0 --patch'"
+	;;
+--patch)
+	echo "Applying patches listed in the spec file.."
+	# Make sure we are in the -bump branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-bump//')
+	git checkout "$BASE_BRANCH-bump"
+	# Check that there any patches to apply
+	if test -z "$(ls .dgt_patches)"; then
+		echo "No more patches to apply"
+		echo "You can now run '$0 --apply'"
+		exit 0
+	fi
+	# Apply the patches
+	for patch in $(ls .dgt_patches); do
+		if ! git am -3 ".dgt_patches/$patch"; then
+			mv -f ".dgt_patches/$patch" ./
+			echo "Failed to apply patch './$patch' as .mbox patch"
+			echo "Please, resolve the git-am conflict manually and run '$0 --patch' to continue where we have left off"
+			exit 1
+		fi
+		rm -f ".dgt_patches/$patch"
+	done
+	echo "You can now use '$0 --apply' to update the original dist-git branch"
+	;;
+--apply)
+	# Make sure we are in the base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-bump//')
+	echo "Applying patches from $BASE_BRANCH-bump branch.."
+	git checkout "$BASE_BRANCH"
+	# Get the SPEC file location and highest patch number
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+	LAST_PATCH=$(egrep '^%patch' "$SPEC" | cut -d ' ' -f 1 | sed 's/%patch//' | sort -n | tail -1)
+	test -z "$LAST_PATCH" && LAST_PATCH=0
+	# Make sure we are in a -bump branch
+	git checkout "$BASE_BRANCH-bump"
+	# we should clean the repo to avoid file conflicts
+	# Find the oldest commit
+	FIRST_COMMIT=$(git rev-list HEAD | tail -n 1)
+	# Remove any old patches and create new ones
+	rm -rf .dgt_patches
+	git format-patch --start-number $(echo $LAST_PATCH + 1 | bc -q) -o .dgt_patches -N "$FIRST_COMMIT"
+	if ! test -d ".dgt_patches"; then
+		echo "No patches to apply"
+		exit 1
+	fi
+	# Make sure we are back in the base branch
+	git checkout "$BASE_BRANCH"
+	# Setup data for changelog line
+	DATE=$(date '+%a %b %d %Y')
+	NAME=$(git config --get user.name)
+	EMAIL=$(git config --get user.email)
+	# Deal with release and version
+	EPOCH=$(dgt print -mv 'epoch' -d 0)
+	VER=$(dgt print -mv 'ver' "${PASS[@]}")
+	REL=$(dgt print -mv 'rel' "${PASS[@]}" | cut -d '.' -f 1)
+	# Create initial changelog line
+	CHANGELOG_LINES="* $DATE $NAME <$EMAIL> - $EPOCH:$VER-$REL\n"
+	CHANGELOG_LINES="$CHANGELOG_LINES- New version ($EPOCH:$VER-$REL)\n"
+	# Initialize iterators
+	CUR_PATCH=$(echo $LAST_PATCH + 1 | bc -q)
+	CUR_PATCH_LINE1=$(egrep '^Patch|^Source' $SPEC | cut -d ':' -f 1 | tail -1)
+	CUR_PATCH_LINE2=$(egrep '^%patch|^%setup|^%prep' $SPEC | cut -d ' ' -f 1 | tail -1)
+	ls -l .dgt_patches
+	for patch in $(ls .dgt_patches); do
+		echo "patch=$patch"
+		echo "/^$CUR_PATCH_LINE1/a Patch$CUR_PATCH: $patch"
+		sed -i "/^$CUR_PATCH_LINE1/a Patch$CUR_PATCH: $patch" "$SPEC"
+		sed -i "/^$CUR_PATCH_LINE2/a %patch$CUR_PATCH -p1" "$SPEC"
+		_new=$(egrep ^Subject ".dgt_patches/$patch" | cut -d ' ' -f 3-)
+		CHANGELOG_LINES="$CHANGELOG_LINES- $_new\n"
+		mv ".dgt_patches/$patch" ./
+		git add "$patch"
+		CUR_PATCH_LINE1="Patch$CUR_PATCH"
+		CUR_PATCH_LINE2="%patch$CUR_PATCH"
+		CUR_PATCH=$(echo $CUR_PATCH + 1 | bc -q)
+	done
+	sed -i "/^%changelog/a $CHANGELOG_LINES" "$SPEC"
+
+	# Add the modified spec file to the index
+	git add "$SPEC"
+
+	# Generate new clog and amend the commit with it
+	dgt clog --build "${PASS[@]}"
+	git commit --amend -F clog
+
+	# Just do the basic cleanup
+	git branch -D "$BASE_BRANCH-bump"
+	rm -rf .dgt_patches/
+	rm -f .dgt_spec.bup
+
+	echo "Sucessfully updated the original branch. Please check the commit and ammend it with 'dgt commit --amend' if necessary."
+	;;
+--abort)
+	# Make sure we are in the base branch
+	BASE_BRANCH=$(git branch | egrep -E '^\*' | awk '{print $2}' | sed 's/-bump//')
+	git checkout "$BASE_BRANCH"
+	git branch -D "$BASE_BRANCH-bump" || :
+
+	# Get the spec file location
+	SPEC=$(dgt print -mv spec "${PASS[@]}")
+
+	# Clean the dir with patches
+	rm -rf .dgt_patches/ || :
+
+	# Reset to the tracked remote
+	REMOTE=$(dgt print -mv branch_remote "${PASS[@]}")/$(dgt print -mv branch_merge "${PASS[@]}")
+	git reset --hard "$REMOTE" || :
+	mv -f .dgt_spec.bup "$SPEC" || :
+	git clean -fxd || :
+	echo "The -bump branch was removed. You can now initialize a new -bump branch."
+	;;
+*)
+	echo "Usage: $0 <command> [modifiers]
+
+Available commands:
+--init <version>  : Initialize the -bump branch for the rebase
+--patch           : Apply the patches listed in the .spec file
+--apply           : Apply back the patches from -bump branch
+--abort           : Abort the changes and remove the -bump branch"
+	;;
+esac

@@ -1,0 +1,73 @@
+#! /usr/bin/env bash
+
+set -e
+
+declare -A PASS
+
+# This variable contains the command
+COMMAND=
+# In case, we use aliasing, this variable contains the remaining arguments
+# This does not support escaping, etc (aka aliasing does not support escaping)
+COMMAND_REM=
+# Helper vars
+FOUND=
+i=0
+
+for arg in "$@"; do
+	if test \( "$(echo $arg |head -c 2)" == "--" -a "$arg" != "--version" -a "$arg" != "--help" \) -o -n "$FOUND"; then
+		PASS[$i]="$arg"
+		i=$(($i+1))
+	else
+		COMMAND="$arg"
+		FOUND="y"
+	fi
+done
+
+# Add the directory to the PATH (if called with full path)
+echo "$0" | grep -q '/' && export PATH="$(dirname $0):$PATH"
+
+# Load aliases (if available and parsable)
+for conf in /etc/dgt/alias.sh "$HOME/.config/dgt/alias.sh"; do
+	if test -f "$conf"; then
+		. "$conf" || echo "WARNING: Config file '$conf' is not parsable"
+	fi
+done
+
+test -z "$COMMAND" && COMMAND="--help"
+# Unalias the command (if there is an alias for it)
+if test -n "${dgt_aliases[$COMMAND]}"; then
+	COMMAND=$(echo "${dgt_aliases[$COMMAND]}" | cut -d ' ' -f 1)
+	COMMAND_REM=$(echo "${dgt_aliases[$COMMAND]}" | cut -d ' ' -f 2-)
+fi
+
+# Parse some basic commands
+case "$COMMAND" in
+version|--version)
+	"$0-print" --version --minimal
+	exit $?
+	;;
+help|--help|"")
+	echo -e "Usage: $0 [command] <param1> <param2> ...\n"
+	echo -e "Available custom commands:"
+	echo -e $("$0-print" --minimal --commands 2>/dev/null)
+	echo -e "\nYou can use '$0 [command] --help' for more information on any of the commands.\n"
+	echo -e "The following aliases are also available:"
+	for i in "${!dgt_aliases[@]}"; do
+		echo "'$i' -> '${dgt_aliases[$i]}'"
+	done
+	echo ""
+	echo -e "If the given command is not available, $0 will run:\ngit [command] <param1> <param2> ..."
+	exit 1
+	;;
+esac
+
+# Get the new command
+DGT_CMD="$(basename $0)-$COMMAND"
+
+# Check if the command exists
+if which "$DGT_CMD" >/dev/null 2>/dev/null; then
+	"$DGT_CMD" $COMMAND_REM "${PASS[@]}"
+else 
+	# Fall-back to git
+	git "$COMMAND" $COMMAND_REM "${PASS[@]}"
+fi

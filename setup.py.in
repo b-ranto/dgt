@@ -1,0 +1,16 @@
+import os
+import glob
+import subprocess
+from distutils.core import setup
+
+setup(
+    name = "dgt",
+    version = "%VERSION%",
+    author = "Boris Ranto",
+    author_email = "branto@redhat.com",
+    description = ("Alternative implementation of dist-git tools built on top of pyrpkg"),
+    license = "GPLv2",
+    packages = ['dgt'],
+    scripts = glob.glob('ui/*'),
+    data_files = [('/etc/dgt', glob.glob('conf/*')), ('/usr/share/zsh/site-functions/', glob.glob('comp/zsh/_dgt*')), ('/etc/bash_completion.d', glob.glob('comp/bash/*.bash')), ('/usr/share/man/man1/', glob.glob('man1/*.gz'))],
+)

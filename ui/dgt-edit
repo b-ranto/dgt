@@ -1,0 +1,13 @@
+#! /usr/bin/env bash
+
+if test -z "$EDITOR"; then
+	echo "No default editor (\$EDITOR), using vi"
+	EDITOR="$(which vi)"
+fi
+
+if test -n "$*"; then
+	echo "Usage: $0"
+	exit 1
+fi
+
+"$EDITOR" "$(basename $PWD).spec"

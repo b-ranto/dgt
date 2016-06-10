@@ -1,0 +1,48 @@
+#! /usr/bin/env bash
+
+DEPS="which help2man python git gzip rpmbuild"
+if ! which $DEPS; then
+	echo "This script requires the following binaries:"
+	echo $DEPS
+	echo "At least one of them is missing (or not in path)"
+	exit 1
+fi
+
+VERSION=$(git describe --tags --dirty | cut -d '-' -f 1)
+test -z "$VERSION" && VERSION="0.0_$(git rev-parse --short HEAD)"
+RELEASE=$(git describe --tags --dirty | cut -sd '-' -f 2- | sed 's|-|.|g')
+test -z "$RELEASE" && RELEASE=0
+
+# Parse the .in files
+sed -e "s|%VERSION%|$VERSION|g" -e "s|%RELEASE%|$RELEASE|g" < dgt.spec.in > dgt.spec
+sed -e "s|%VERSION%|$VERSION|g" -e "s|%RELEASE%|$RELEASE|g" < setup.py.in > setup.py
+
+# Generate the man pages
+export PYTHONPATH=".:$PYTHONPATH"
+rm -rf man1
+mkdir -p man1
+for i in ui/dgt-*;do
+	echo $i | grep -q workflow- && continue
+	help2man --no-info --version-string $VERSION ./$i > man1/$(basename $i).1
+done
+cd man1
+for i in *.1;do
+	gzip -f $i
+done
+cd ..
+
+# Create source tarball
+python setup.py sdist -d .
+
+# Create source rpm
+rpmbuild \
+	--define "_sourcedir $PWD" \
+	--define "_specdir $PWD" \
+	--define "_builddir $PWD" \
+	--define "_srcrpmdir $PWD" \
+	--define "_rpmdir $PWD" \
+	--define "dist None" \
+	--define "fedora 19" \
+	--define "rhel 7" \
+	--define "None 1" \
+	--nodeps -bs "$PWD/dgt.spec"

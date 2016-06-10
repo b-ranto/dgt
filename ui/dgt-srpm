@@ -1,0 +1,54 @@
+#! /usr/bin/env python2
+
+import sys
+import dgt
+import dgt.logger as logger
+import argcomplete
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+parser = ArgumentParser(description='Manipulate the source rpm')
+
+# Add options that do an actual work, these can be combined!
+group1 = parser.add_argument_group('actions', 'Actions to perform, each argument specifies a separate action, actions can be combined.')
+group1.add_argument('--build', '-b', action='store_true', default=False, help='Build the source rpm from current dist-git')
+group1.add_argument('--compile', '-c', action='store_true', default=False, help='Compile sources from the source rpm')
+group1.add_argument('--install', '-i', action='store_true', default=False, help='Run rpmbuild -br on the source rpm')
+group1.add_argument('--lint', '-l', action='store_true', default=False, help='Run rpmlint on the source rpm')
+group1.add_argument('--mock', '-m', action='store_true', default=False, help='Mock build the source rpm')
+group1.add_argument('--prep', '-p', action='store_true', default=False, help='Run rpmbuild -bp on the source rpm')
+group1.add_argument('--binary', '-r', action='store_true', default=False, help='Build binary rpm from the source rpm')
+
+# Add mock modifier options
+group2 = parser.add_argument_group('common-modifiers', 'Modifiers for "mock" action.')
+group2.add_argument('--mock-root', action='store', default=None, help='Use this mock root')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+command = dgt.Commands(options)
+
+if options.build:
+	logger.cli.info("Build srpm: %s" % command.srpmfilename)
+
+if options.compile:
+	command.compile()
+
+if options.install:
+	command.install()
+
+if options.lint:
+	command.lint()
+
+if options.mock:
+	command.mockbuild(root=options.mock_root)
+
+if options.prep:
+	command.prep()
+
+if options.binary:
+	command.local()

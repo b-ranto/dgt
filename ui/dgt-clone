@@ -1,0 +1,118 @@
+#! /usr/bin/env python2
+
+import os
+import sys
+import argcomplete
+
+import dgt
+
+from git import Repo, RemoteProgress
+from argparse import ArgumentParser
+
+from dgt.configuration import ConfigParser
+
+class ProgressPrinter(RemoteProgress):
+	def update(self, op_code, cur_count, max_count=None, message=''):
+		sys.stdout.write('.')
+		sys.stdout.flush()
+		#if message:
+		#	sys.stdout.write('\n' + message)
+		#print(op_code, cur_count, max_count, cur_count / (max_count or 100.0), message or "NO MESSAGE")
+
+# Auto-detect the available remotes (dist-gits)
+remotes = ['upstream'] + map(
+    lambda x: x._commands_name,
+    dgt.get_modules()
+)
+
+parser = ArgumentParser(description='Clone dist-git modules')
+
+# dist-git module
+parser.add_argument('module', metavar='PACKAGE', action='store', help='The dist-git module to clone')
+
+# Add options that do an actual work, these can be combined!
+group1 = parser.add_argument_group('actions', 'Actions to perform, each argument specifies a separate action, actions can be combined.')
+group1.add_argument('--with-upstream', '-u', metavar='URL', dest='upstream', action='store', help='Setup upstream remote from url')
+for dgit in remotes:
+    group1.add_argument('--no-' + dgit, dest=dgit, action='store_false', default=True, help='Do not setup %s remote' % dgit)
+
+group2 = parser.add_argument_group('clone-modifiers', 'Clone options setup, the default branch mapping is <remote>/master -> <dist-git>.')
+group2.add_argument('--anon', action='store_true', default=False, help='Clone dist-git anonymously')
+group2.add_argument('--user', action='store', help='User name to use')
+group2.add_argument('--path', action='store', help='Root directory for the cloning procedure')
+#group2.add_argument('--bare-dir', metavar='DIR', action='store', help='The name of a directory to make a bare clone to (if it is a bare clone)')
+for dgit in remotes:
+    group2.add_argument('--%s-branch' % dgit, metavar='BRANCH', action='store', help='The name of a %s branch to checkout instead of <remote>/master' % dgit)
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+if options.path:
+	os.chdir(path)
+
+repo = Repo.init(options.module)
+
+# Get the names of all the remotes and all the references
+remote_names = map(
+	lambda x: x.name,
+	repo.remotes
+)
+ref_names = map(
+	lambda x: x.name,
+	repo.refs
+)
+
+# Filter out the dist-gits to process
+remotes = filter(
+	lambda dgit: getattr(options, dgit),
+	remotes
+)
+sys.stdout.write("Setting up following remotes: %s" % str(remotes))
+sys.stdout.flush()
+# Setup all the dist-gits
+for dgit in remotes:
+	if dgit in remote_names:
+		sys.stdout.write("\nWARNING: Failed to setup remote '%s', remote '%s' already exists" % (dgit, dgit))
+		sys.stdout.flush()
+		continue
+	if dgit in ref_names:
+		sys.stdout.write("\nWARNING: Failed to setup remote '%s', reference '%s' already exists" % (dgit, dgit))
+		sys.stdout.flush()
+		continue
+	if dgit == 'upstream':
+		(anongiturl, gitbaseurl) = (options.upstream, options.upstream)
+	else:
+		(anongiturl, gitbaseurl) = ConfigParser(dgit).parse_section('base', ['anongiturl', 'gitbaseurl'])
+	user = options.user or os.environ['LOGNAME']
+	if options.anon:
+		giturl = anongiturl % {'module': options.module}
+	else:
+		giturl = gitbaseurl % {'user': user, 'module': options.module}
+
+	remote = repo.create_remote(dgit, giturl)
+	sys.stdout.write("\nFetching '%s' remote.." % dgit)
+	sys.stdout.flush()
+	try:
+		remote.fetch(progress=ProgressPrinter())
+	except Exception, e:
+		sys.stdout.write("\nWARNING: Failed to fetch remote '%s': %s" % (dgit, str(e)))
+		sys.stdout.write("\nThis usually means that you are not allowed to access the remote data, try setting up your '%s' account or logging in" % dgit)
+		sys.stdout.flush()
+		continue
+	remote_branch = getattr(options, dgit + '_branch')
+	remote_branch = remote_branch or 'master'
+	# Create the branch for <dgit>/<remote_branch>
+	try:
+		branch = repo.create_head(dgit, getattr(remote.refs, remote_branch))
+		branch.set_tracking_branch(getattr(remote.refs, remote_branch))
+	except Exception, e:
+		sys.stdout.write("\nWARNING: Failed to create ref (branch) '%s': %s" % (dgit, str(e)))
+		sys.stdout.write("\nThis usually means the remote branch '%s' does not exist" % remote_branch)
+		sys.stdout.flush()
+		continue
+
+sys.stdout.write("\nDone, you can checkout your desired branch, now.\n")

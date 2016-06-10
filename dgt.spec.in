@@ -1,0 +1,93 @@
+%define name dgt
+%define version %VERSION%
+%define release %RELEASE%
+
+Summary: Alternative implementation of dist-git tools built on top of pyrpkg
+Name: %{name}
+Version: %{version}
+Release: %{release}
+Source0: %{name}-%{version}.tar.gz
+License: GPLv2+
+Group: Development/Libraries
+Url: http://github.com/b-ranto/dgt
+BuildArch: noarch
+
+BuildRequires: python
+BuildRequires: help2man
+BuildRequires: gzip
+BuildRequires: python-argcomplete
+BuildRequires: GitPython
+
+Requires: pyrpkg
+Requires: python-argcomplete
+Requires: GitPython
+Requires: yum
+Requires: koji
+Requires: kobo
+Requires: kobo-client
+Requires: python-bugzilla
+Requires: python-requests
+Requires: python-requests-kerberos
+Requires: python-nitrate
+Requires: python-offtrac
+Requires: python-fedora
+Requires: fedora-cert
+Requires: fedora-packager
+
+%description
+dgt (dist-git tool) is an alternative implementation of packaging tools built on top of pyrpkg with few nice things such as semi-automated rebase/patching, workflow support, improved auto-detection, dist-git transparency, git cli fallback, library-like python interface, ...
+
+%prep
+%setup -n %{name}-%{version}
+
+%build
+python setup.py build
+
+%install
+python setup.py install -O1 --root=$RPM_BUILD_ROOT
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+%files
+%defattr(-,root,root)
+%dir /etc/dgt
+/etc/dgt/dgt.conf
+/etc/dgt/fedora.conf
+%dir /usr/lib/python2.7/site-packages/dgt
+/usr/lib/python2.7/site-packages/dgt-*.egg-info
+/usr/lib/python2.7/site-packages/dgt/__init__.py*
+/usr/lib/python2.7/site-packages/dgt/_bugzilla.py*
+/usr/lib/python2.7/site-packages/dgt/_koji.py*
+/usr/lib/python2.7/site-packages/dgt/argparser.py*
+/usr/lib/python2.7/site-packages/dgt/base.py*
+/usr/lib/python2.7/site-packages/dgt/configuration.py*
+/usr/lib/python2.7/site-packages/dgt/fedora.py*
+/usr/lib/python2.7/site-packages/dgt/logger.py*
+/usr/bin/dgt
+/usr/bin/dgt-bugzilla
+/usr/bin/dgt-bump
+/usr/bin/dgt-clog
+/usr/bin/dgt-clone
+/usr/bin/dgt-edit
+/usr/bin/dgt-koji
+/usr/bin/dgt-local
+/usr/bin/dgt-print
+/usr/bin/dgt-srpm
+/usr/bin/dgt-upload-sources
+/usr/bin/dgt-workflow
+/usr/bin/dgt-workflow-patch
+/usr/bin/dgt-workflow-rebase
+/usr/share/man/man1/dgt-bugzilla*.gz
+/usr/share/man/man1/dgt-bump*.gz
+/usr/share/man/man1/dgt-clog*.gz
+/usr/share/man/man1/dgt-clone*.gz
+/usr/share/man/man1/dgt-edit*.gz
+/usr/share/man/man1/dgt-koji*.gz
+/usr/share/man/man1/dgt-local*.gz
+/usr/share/man/man1/dgt-print*.gz
+/usr/share/man/man1/dgt-srpm*.gz
+/usr/share/man/man1/dgt-upload-sources*.gz
+/usr/share/man/man1/dgt-workflow*.gz
+
+%changelog

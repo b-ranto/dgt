@@ -1,0 +1,25 @@
+#! /usr/bin/env python2
+
+import sys
+import dgt
+import dgt.logger as logger
+import argcomplete
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+parser = ArgumentParser(description='Upload new source files and update sources file')
+
+# Add options that do an actual work, these can be combined!
+parser.add_argument('--replace', '-r', action='store_true', help='Replace the sources tracked at the lookaside cache')
+parser.add_argument('file', metavar='FILE', action='append', help='The path to the file to upload')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+command = dgt.Commands(options)
+
+command.upload(options.file, replace = options.replace)

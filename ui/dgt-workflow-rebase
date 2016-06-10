@@ -1,0 +1,6 @@
+#! /usr/bin/env bash
+# VERSION
+
+dgt bump --init "$VERSION"
+dgt bump --patch
+dgt bump --apply

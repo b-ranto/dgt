@@ -1,0 +1,51 @@
+#! /usr/bin/env python2
+
+import sys
+import dgt
+import dgt.logger as logger
+import argcomplete
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+parser = ArgumentParser(description='Query the covscan hub via RPC')
+
+# Add options that do an actual work, these can be combined!
+group1 = parser.add_argument_group('actions', 'Actions to perform, each argument specifies a separate action, actions can be combined.')
+group1.add_argument('---comment', '-c', action='store_true', default=False, help='Add a comment listing commited patches to the bugs')
+group1.add_argument('--fixed-in', '-f', action='store_true', default=False, help='Update the Fixed in field of all the bugs referenced from git history')
+group1.add_argument('--modified', '-m', action='store_true', default=False, help='Push the bugs referenced in git commit messages to MODIFIED state')
+group1.add_argument('--state', '-s', metavar='STATE', action='store', default=None, help='Push the bugs referenced in git commit messages to the specified state')
+
+# Add modifier options
+group2 = parser.add_argument_group('common-modifiers', 'Modifiers that are common for all the actions.')
+group2.add_argument('--bug', '-b', metavar='BUG_NO', dest='bugs', action='append', type=int, default=[], help='Process this bug number -- can be used multiple times')
+group2.add_argument('--from', '-a', metavar='HASH', dest='_from', action='store', help='Limit git history lookup -- starting at this commit hash')
+group2.add_argument('--to', '-z', metavar='HASH', action='store', help='Limit git history lookup -- ending at this commit hash')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+if options.bugs and (options._from != None or options.to != None):
+	logger.cli.error("Can't set bug number git history lookup and bug numbers at the same time")
+	raise RuntimeError("Invalid usage")
+
+if options.modified and options.state not in ['MODIFIED', None]:
+	logger.cli.error("Can't set two states for a bug, please use --modified or ---state exclusively")
+	raise RuntimeError("Invalid usage")
+
+if options.comment and options.bugs:
+	logger.cli.error("Can't add comment when specifying bugs manually -- there is no commit url.")
+	raise RuntimeError("Invalid usage")
+
+if options.modified:
+	options.state = 'MODIFIED'
+
+command = dgt.Commands(options)
+
+# If any action was specified batch update the bz
+if options.state or options.fixed_in or options.comment:
+	command.bugzilla(fixed_in=options.fixed_in, state=options.state, comment=options.comment, start=options._from, end=options.to, bugs=options.bugs)

@@ -1,0 +1,6 @@
+#! /usr/bin/env bash
+# HEXSHA
+
+dgt local --init
+dgt local --patch "$HEXSHA"
+dgt local --apply

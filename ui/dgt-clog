@@ -1,0 +1,31 @@
+#! /usr/bin/env python2
+
+import sys
+import dgt
+import dgt.logger as logger
+import argcomplete
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+parser = ArgumentParser(description='Commit with the message from spec file changelog')
+parser.add_argument('--build', '-b', action='store_true', default=False, help='Create the changelog')
+parser.add_argument('--commit', '-c', action='store_true', default=False, help='Create commit from the changelog')
+parser.add_argument('--raw', '-r', action='store_true', default=False, help='Do not post-process the changelog')
+parser.add_argument('--signoff', '-s', action='store_true', default=False, help='Add sign-off-by line')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+command = dgt.Commands(options)
+
+# Generate the clog, first
+if options.build or options.commit:
+	command.clog(raw=options.raw)
+
+# Perform the commit
+if options.commit:
+	command.commit(file='clog', signoff=options.signoff)

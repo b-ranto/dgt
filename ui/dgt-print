@@ -1,0 +1,145 @@
+#! /usr/bin/env python2
+
+import sys
+import dgt
+import pkg_resources
+import argcomplete
+import pprint
+import glob
+import os
+
+from dgt.argparser import GitrpkgArgParser as ArgumentParser
+
+_program_name = 'dgt'
+
+def lprint(name, value):
+	# Use the easily parsable minimal output form
+	if options.minimal:
+		# Print lists in their bash form -- space separated list of values
+		if type(value) == list:
+			value = ' '.join(map(lambda x: str(x), value))
+		print(str(value))
+	# Use the verbose python-like output form
+	else:
+		# This is a more pythonish way of printing things
+		s = pprint.pformat(value)
+		a = s.split('\n')
+		a[0] = "%s = %s" % (name, a[0])
+		print(('\n' + (' '*(3+len(name)))).join(a))
+
+# First, parse the input
+parser = ArgumentParser(description='Query the git extension library for values')
+# Add options that do an actual work, these can be combined!
+group1 = parser.add_argument_group('actions', 'Actions to perform, each argument specifies a separate action, actions can be combined.')
+group1.add_argument('--avail-values', '-a', action='store_true', default=None, help='Show all available internal variables')
+group1.add_argument('--branches', '-b', action='store_true', default=False, help='List all the available branches')
+group1.add_argument('--covscan-profiles', '-c', action='store_true', default=False, help='Show all available covscan mock profiles')
+group1.add_argument('--clog', '-g', action='store_true', default=False, help='Show latest changelog entry')
+group1.add_argument('--call', action='store_true', default=False, help='Call the library method')
+group1.add_argument('--commands', action='store_true', default=False, help='Show all the available custom commands')
+group1.add_argument('--errata', '-e', action='store_true', default=False, help='Show active erratas for this package')
+group1.add_argument('--new-bugs', '-n', action='store_true', default=False, help='Show bugs from git history since last build')
+group1.add_argument('--latest-build', '-l', action='store_true', default=False, help='Show latest build nvr')
+group1.add_argument('--product-versions', '-p', metavar='ID', dest='errata_id', action='store', default=None, help='Show available product versions for given errata id')
+group1.add_argument('--spec', '-s', action='store_true', default=False, help='Print the spec file name')
+group1.add_argument('--value', '-v', metavar='VAR', action='append', default=[], help='Show the value of an internal variable, can be used multiple times')
+group1.add_argument('--version', action='store_true', default=False, help='Print the version info')
+group1.add_argument('--workflow-commands', action='store_true', default=False, help='Show all the available custom workflow commands')
+
+# Add modifier options
+group2 = parser.add_argument_group('common-modifiers', 'Modifiers that are common for all the actions.')
+group2.add_argument('--minimal', '-m', action='store_true', default=False, help='Print the output in an easily parsable form')
+group2.add_argument('--unmute', action='store_true', default=False, help='Do not mute the output while getting the value')
+
+group3 = parser.add_argument_group('value-modifiers', 'Modifiers for the --value argument.')
+group3.add_argument('--default', '-d', metavar='VAL', action='store', default=None, help='The default value to use if the internal variable does not exist')
+
+argcomplete.autocomplete(parser)
+
+if len(sys.argv) < 2:
+	sys.argv.append('--help')
+
+options = parser.parse_args()
+
+# --call/--debug unmutes output
+options.quiet = not options.debug and not options.unmute
+
+# Parse those that do not require 'command' to exist, first
+if options.version:
+	lprint("version", pkg_resources.require(_program_name)[0].version)
+
+if options.commands:
+	commands = set()
+	for d in os.environ['PATH'].split(os.pathsep):
+		tmp_len = len(d + '/' + _program_name + '-')
+		tmp_commands = glob.glob(d + '/' + _program_name + '-*')
+		commands.update(
+			map(
+				lambda x:
+					x[tmp_len:],
+				tmp_commands
+			)
+		)
+	lprint("commands", list(commands))
+
+if options.workflow_commands:
+	workflow_commands = set()
+	for d in os.environ['PATH'].split(os.pathsep):
+		tmp_len = len(d + '/' + _program_name + '-workflow-')
+		tmp_commands = glob.glob(d + '/' + _program_name + '-workflow-*')
+		workflow_commands.update(
+			map(
+				lambda x:
+					x[tmp_len:],
+				tmp_commands
+			)
+		)
+	lprint("workflow_commands", list(workflow_commands))
+
+# Initiate command
+command = dgt.Commands(options)
+
+
+# Show the available branches
+if options.branches:
+	lprint("branches", command._list_branches()[1])
+
+# Show covscan profiles
+if options.covscan_profiles:
+	lprint("covscan_profiles", command.covscan_profiles)
+
+# Show the bugs
+if options.new_bugs:
+	lprint("new_bugs", command.bugzilla_bugs().keys())
+
+# Show the latest build
+if options.latest_build:
+	lprint("latest_build", command.latest_build['nvr'])
+
+# Show the list of potentially suitable errata
+if options.errata:
+	lprint("errata", command.errata_list())
+
+# Show the list of product versions for given errata
+if options.errata_id != None:
+	lprint("product_versions", command.errata_product_list(options.errata_id))
+
+if options.spec:
+	lprint("spec", command.spec)
+
+if options.avail_values:
+	lprint("avail_values", dir(command))
+
+if options.clog:
+	lprint("clog", command.clog())
+
+for value in options.value:
+	if value in dir(command):
+		if options.call:
+			lprint(value + "()", getattr(command, value)())
+		else:
+			lprint(value, getattr(command, value))
+	elif options.default != None:
+		lprint(value, options.default)
+	else:
+		print('ERROR: No such value(%s)' % value)

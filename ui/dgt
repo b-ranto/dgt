@@ -26,6 +26,9 @@ done
 # Add the directory to the PATH (if called with full path)
 echo "$0" | grep -q '/' && export PATH="$(dirname $0):$PATH"
 
+# Make sure the dgt_aliases associative array always exists
+declare -A dgt_aliases
+
 # Load aliases (if available and parsable)
 for conf in /etc/dgt/alias.sh "$HOME/.config/dgt/alias.sh"; do
 	if test -f "$conf"; then
@@ -46,7 +49,7 @@ version|--version)
 	"$0-print" --version --minimal
 	exit $?
 	;;
-help|--help|"")
+help|--help|-h|"")
 	echo -e "Usage: $0 [command] <param1> <param2> ...\n"
 	echo -e "Available custom commands:"
 	echo -e $("$0-print" --minimal --commands 2>/dev/null)

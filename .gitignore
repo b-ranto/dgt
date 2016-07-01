@@ -2,7 +2,7 @@
 *.rpm
 *.tar.gz
 MANIFEST
-man1
+man1/*.gz
 build
 dgt.spec
 setup.py

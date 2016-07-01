@@ -9,7 +9,7 @@ if ! which $DEPS; then
 fi
 
 VERSION=$(git describe --tags --dirty | cut -d '-' -f 1)
-test -z "$VERSION" && VERSION="0.0_$(git rev-parse --short HEAD)"
+test -z "$VERSION" && VERSION="0.0_git$(git rev-parse --short HEAD)"
 RELEASE=$(git describe --tags --dirty | cut -sd '-' -f 2- | sed 's|-|.|g')
 test -z "$RELEASE" && RELEASE=0
 
@@ -17,17 +17,20 @@ test -z "$RELEASE" && RELEASE=0
 sed -e "s|%VERSION%|$VERSION|g" -e "s|%RELEASE%|$RELEASE|g" < dgt.spec.in > dgt.spec
 sed -e "s|%VERSION%|$VERSION|g" -e "s|%RELEASE%|$RELEASE|g" < setup.py.in > setup.py
 
+# Remove all the gzipped man pages
+rm -f man1/*.gz
+
 # Generate the man pages
 export PYTHONPATH=".:$PYTHONPATH"
-rm -rf man1
-mkdir -p man1
 for i in ui/dgt-*;do
 	echo $i | grep -q workflow- && continue
-	help2man --no-info --version-string $VERSION ./$i > man1/$(basename $i).1
+	out="man1/$(basename $i).1"
+	help2man --no-info --version-string $VERSION ./$i > "$out"
+	gzip -f "$out"
 done
 cd man1
 for i in *.1;do
-	gzip -f $i
+	gzip -kf $i
 done
 cd ..
 
